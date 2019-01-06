@@ -1,0 +1,21 @@
+[Unit]
+Description=smtpToZbxTrap inspired by https://www.zabbix.com/forum/showthread.php?p=186838
+#Requires=After=XYZ.service       # Requires the XYZ service to run first
+
+[Service]
+ExecStart=/usr/local/bin/smtpToZbxTrap.py
+# Required on some systems
+#WorkingDirectory=/working/directory
+Restart=always
+# Restart service after 10 seconds if node service crashes
+RestartSec=10
+# Output to syslog
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=smtpToZbxTrap
+User=zabbix
+Group=zabbix
+Environment=BINDPORT=10025 BINDADDR=10.91.10.11 ZABBIXSRV=127.0.0.1 ZABBIXPORT=10051
+
+[Install]
+WantedBy=multi-user.target
