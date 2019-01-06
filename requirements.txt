@@ -1,0 +1,4 @@
+beautifulsoup4==4.4.1
+inbox.py==0.0.6
+py-zabbix==1.1.5
+Unidecode==1.0.22
