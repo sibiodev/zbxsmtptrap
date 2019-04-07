@@ -10,6 +10,8 @@ from zabbix.sender import ZabbixMetric, ZabbixSender
 from unidecode import unidecode
 import json
 from time import sleep
+import ConfigParser
+import argparse
 
 from base64 import b64decode
 import quopri
@@ -26,55 +28,98 @@ from logging.handlers import RotatingFileHandler
 
 
 
-BIND_TO_ADDR = '10.91.10.11'
+BIND_TO_ADDR = '127.0.0.1'
 BIND_TO_PORT = '10025'
 
 ZABBIX_SERVER_ADDR = '127.0.0.1'
 ZABBIX_SERVER_PORT = '10051'
 
 LOG_FILE='/var/log/smtptozbx/smtptozbx.log'
-SUBJECT_DISCOVERY_MEMORY = "/var/lib/smtptotrap/memory.db"
+SERVER_MEMORY = "/var/lib/smtptotrap/memory.db"
 
 DECODE_HTML = True
 
-
-DEBUG = False
-
-if DEBUG:
-    LOG_FILE='/tmp/smtptozbx.log'
-    BIND_TO_ADDR = '127.0.0.1'
-    SUBJECT_DISCOVERY_MEMORY = "/tmp/memory.db"
+DEFAULT_INI = '/etc/zabbix/smtpToZbxTrap.ini'
 
 
 
 
-# SUBJECT_DISCOVERY is a list of (key, regegexp)
-# that will match smtp.trap.discovery.subject[key] with value {#KEY} : value
-# where value is value of the named group of the regexp named after the key.
-# Other group values are reported as metric values for this key on the form
-# smtp.trap.match.subject[key, keyvalue, group]
-# in addition two extra key are sent to give details
-# smtp.trap.match.subject.subject[key, keyvalue] that will contain the subject
-# and
-# smtp.trap.match.subject.body[key, keyvalue] that will contain the body.
-# the purpose of this 2 last keys is to use dependent items in zabbix 3.4+
-# to further analyse the message within Zabbix within a discovery rule.
-SUBJECT_MATCH = (
- ("veeamjob", r"\[(?P<status>.*)\] (?P<veeamjob>.+) \((?P<detail>.*)\)"),
-)
 
 
+class ServerConfiguration(object):
+    """Configuration holding class, unpack config file (ini file) in config.section_variable 
+    It also does some specific mechanics about ltfs.ini [drive]/[json] section and checks some 
+    files."""
+    __section_names__ = ['server','zabbix']
+    __variable_sections__ = ['subjects']
+    
+    def __init__(self,file_name):
+        """Initialize instance by reading the config file"""
+        self.set_defaults()
+        config = ConfigParser.ConfigParser()
+        config.read(file_name)
+        for section_name in self.__section_names__:
+            for config_name, config_value in config.items(section_name):
+                self.__dict__['%s_%s'%(section_name,config_name)] = config_value
+        for section_name in self.__variable_sections__:
+            self.__dict__[section_name] = dict(config.items(section_name))
 
+    def set_defaults(self):
+        self.server_bind_address=BIND_TO_ADDR
+        self.server_bind_port=BIND_TO_PORT
+        self.server_log_file=LOG_FILE
+        self.server_memory=SERVER_MEMORY
+        self.server_decode_html=DECODE_HTML
+        self.zabbix_port=ZABBIX_SERVER_PORT
+        self.zabbix_address=ZABBIX_SERVER_ADDR
 
 logger = logging.getLogger('smtptozbx')
 logger.setLevel(logging.DEBUG)
 
-handler = RotatingFileHandler(LOG_FILE, maxBytes=1000000, backupCount=10)
+
+argument_parser = argparse.ArgumentParser(description='smtpToZbxTrap listener daemon')
+
+argument_parser.add_argument('--ini', 
+        dest='ini',
+        default=DEFAULT_INI,
+        help='Configuration file to use (default: %(default)s)')
+
+
+group = argument_parser.add_mutually_exclusive_group(required=True)
+
+group.add_argument('--service',
+                   action='store_true',
+                   help='Run as a service, listen for emails')
+
+group.add_argument('--refresh',
+                   action='store_true',
+                   help='Resend discoveries in memory to update')
+
+group.add_argument('--list',
+                   action='store_true',
+                   help='List content of memory')
+
+group.add_argument('--remove',
+                   nargs=3,
+                   metavar=('HOST','KEY','VALUE'),
+                   dest='remove',
+                   help='Remove one or more value from memory (wild card character is %)')
+
+
+
+args = argument_parser.parse_args()
+
+config=ServerConfiguration(args.ini)
+
+handler = RotatingFileHandler(config.server_log_file, maxBytes=1000000, backupCount=10)
 handler.setFormatter( logging.Formatter(fmt='%(asctime)s %(message)s',
-                                    datefmt='%Y-%m-%d %I:%M:%S %p') )
+                                datefmt='%Y-%m-%d %I:%M:%S %p') )
 logger.addHandler(handler)
 
 
+
+def filter_unicode(text):
+    return text.decode('ascii', errors='ignore')
 
 class MyZabbix(object):
     """A small convenience object to pack ZabbixMetric and ZabbixSender together."""
@@ -86,7 +131,10 @@ class MyZabbix(object):
         self.metrics = []
     
     def add(self, key, value):
-        self.metrics.append( ZabbixMetric(self.host,key,value) )
+        key = filter_unicode(key)
+        value = filter_unicode(value)
+        host = filter_unicode(self.host)
+        self.metrics.append( ZabbixMetric(host,key,value) )
         
     def send(self):
         if self.metrics:
@@ -108,7 +156,7 @@ class Memory(object):
     """A small wrapper around sqlite3 database. This could be better, se TODO remark in 
     SubjectMatcher class."""
     
-    def __init__(self, dbpath=SUBJECT_DISCOVERY_MEMORY):
+    def __init__(self, dbpath=config.server_memory):
         # Check database
         #
         self.db = sqlite3.connect(dbpath)
@@ -139,6 +187,15 @@ class Memory(object):
     def get_hosts(self):
         cursor = self.db.execute("""SELECT DISTINCT host FROM subject""")
         return [item[0] for item in cursor.fetchall()];
+    
+    def list(self):
+        cursor = self.db.execute("""SELECT host,key,value FROM subject ORDER BY host,key,value""")
+        return cursor.fetchall()
+
+    def remove(self, host, key, value):
+        self.db.execute("""DELETE FROM subject WHERE 'host' like ? AND 'key' like ? AND 'value' like ?""",
+                    (host, key, value))
+        self.db.commit()
 
 class SubjectDiscovery(object):
     """This object is here to produce the subjectdiscovery SMTP trap (smtp.trap.subject.dicovery[ key ]).
@@ -158,7 +215,7 @@ class SubjectDiscovery(object):
         self.prototype_regexp = {}
         self.zabbix = myzabbix
         self.host_match = {}
-        for prototype_class, regexp in SUBJECT_MATCH:
+        for prototype_class, regexp in config.subjects.items():
             self.prototype_classes.append(prototype_class)
             self.prototype_regexp[prototype_class] = re.compile(regexp)
         
@@ -191,7 +248,7 @@ class SubjectDiscovery(object):
                     self.memory.add_subject(self.host, prototype_class, prototype_name)
                     logger.debug('New value {}: added in memory.'.format(prototype_name))
 
-def resend_discovery(zabbix_server=ZABBIX_SERVER_ADDR, zabbix_port=int(ZABBIX_SERVER_PORT)):
+def resend_discovery(zabbix_server=config.zabbix_address, zabbix_port=int(config.zabbix_port)):
     memory = Memory()
     
     for host in memory.get_hosts():
@@ -275,9 +332,8 @@ inbox = Inbox()
 
 @inbox.collate
 
-def handle(to, sender, subject, body,
-        zabbix_server = environ.get('ZABBIXSRV',ZABBIX_SERVER_ADDR),
-        zabbix_port = int(environ.get('ZABBIXPORT',ZABBIX_SERVER_PORT)) ):
+def handle(to, sender, subject, body, zabbix_server=config.zabbix_address, 
+                zabbix_port=int(config.zabbix_port)):
     for recipient in to:
         host = recipient.partition('@')[0]
         logger.info('host is %s'%host)
@@ -331,7 +387,36 @@ def handle(to, sender, subject, body,
         myzabbix.send()
 
 
+
+
 if __name__=='__main__':
-    logger.info('Starting')
-    inbox.serve(address = environ.get('BINDADDR', BIND_TO_ADDR),
-                port = int(environ.get('BINDPORT', BIND_TO_PORT)))
+    if args.service:
+        logger.info('Starting')
+        inbox.serve(address = config.server_bind_address,
+                    port = int(config.server_bind_port))
+    elif args.refresh:
+        logger.info('Refreshing discoveries')
+        resend_discovery()
+    elif args.list:
+        last_host, last_key = None, None
+        for host,key,value in Memory().list():
+            if host!=last_host:
+                last_host=host
+                last_key=key
+                print(host,end=':')
+                print(key,end=':')
+            else:
+                print(" "*len(last_host),end=':')
+                if key!=last_key:
+                    last_key=key
+                    print(key,end=':')
+                else:
+                    print(" "*len(last_key),end=':')
+            print (value)
+    elif args.remove:
+        host, key, value = args.remove
+        Memory().remove(host, key, value)
+        print('Those where removed: ',host,key,value)
+        
+
+            
