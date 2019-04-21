@@ -12,6 +12,7 @@ import json
 from time import sleep
 import ConfigParser
 import argparse
+import types
 
 from base64 import b64decode
 import quopri
@@ -44,14 +45,18 @@ DEFAULT_INI = '/etc/zabbix/smtpToZbxTrap.ini'
 
 
 
-
-
 class ServerConfiguration(object):
     """Configuration holding class, unpack config file (ini file) in config.section_variable 
     It also does some specific mechanics about ltfs.ini [drive]/[json] section and checks some 
     files."""
     __section_names__ = ['server','zabbix']
     __variable_sections__ = ['subjects']
+
+    def bool(self, str):
+        if type(str) == types.BooleanType:
+            return str
+        else:
+            return str.lower() in ['y','yes','true','1']
     
     def __init__(self,file_name):
         """Initialize instance by reading the config file"""
@@ -63,6 +68,7 @@ class ServerConfiguration(object):
                 self.__dict__['%s_%s'%(section_name,config_name)] = config_value
         for section_name in self.__variable_sections__:
             self.__dict__[section_name] = dict(config.items(section_name))
+        self.format_type()
 
     def set_defaults(self):
         self.server_bind_address=BIND_TO_ADDR
@@ -72,6 +78,12 @@ class ServerConfiguration(object):
         self.server_decode_html=DECODE_HTML
         self.zabbix_port=ZABBIX_SERVER_PORT
         self.zabbix_address=ZABBIX_SERVER_ADDR
+
+    def format_type(self):
+        self.server_decode_html = self.bool(self.server_decode_html)
+        self.zabbix_port=int(self.zabbix_port)
+        self.server_bind_port=int(self.server_bind_port) 
+
 
 logger = logging.getLogger('smtptozbx')
 logger.setLevel(logging.DEBUG)
@@ -103,7 +115,7 @@ group.add_argument('--remove',
                    nargs=3,
                    metavar=('HOST','KEY','VALUE'),
                    dest='remove',
-                   help='Remove one or more value from memory (wild card character is %)')
+                   help='Remove one or more value from memory (wild card character is %%)')
 
 
 
@@ -139,13 +151,9 @@ class MyZabbix(object):
     def send(self):
         if self.metrics:
             logger.debug('Sending metrics to %s:%d'%(self.server,self.port))
-            if DEBUG:
-                logger.debug('metrics:{}'.format(self.metrics))
-                response = None
-            else:
-                logger.debug('metrics:{}'.format(self.metrics))
-                response = ZabbixSender(self.server, self.port).send(self.metrics)
-                logger.debug(response)
+            logger.debug('metrics:{}'.format(self.metrics))
+            response = ZabbixSender(self.server, self.port).send(self.metrics)
+            logger.debug(response)
             self.metrics = []
         else:
             logger.debug('Metric are empty, nothing to send to %s:%s'%(self.server,self.port) )
@@ -193,7 +201,7 @@ class Memory(object):
         return cursor.fetchall()
 
     def remove(self, host, key, value):
-        self.db.execute("""DELETE FROM subject WHERE 'host' like ? AND 'key' like ? AND 'value' like ?""",
+        self.db.execute("""DELETE FROM subject WHERE host like ? AND key like ? AND value like ?""",
                     (host, key, value))
         self.db.commit()
 
@@ -248,7 +256,7 @@ class SubjectDiscovery(object):
                     self.memory.add_subject(self.host, prototype_class, prototype_name)
                     logger.debug('New value {}: added in memory.'.format(prototype_name))
 
-def resend_discovery(zabbix_server=config.zabbix_address, zabbix_port=int(config.zabbix_port)):
+def resend_discovery(zabbix_server=config.zabbix_address, zabbix_port=config.zabbix_port):
     memory = Memory()
     
     for host in memory.get_hosts():
@@ -333,7 +341,7 @@ inbox = Inbox()
 @inbox.collate
 
 def handle(to, sender, subject, body, zabbix_server=config.zabbix_address, 
-                zabbix_port=int(config.zabbix_port)):
+                zabbix_port=config.zabbix_port, decode_html=config.server_decode_html):
     for recipient in to:
         host = recipient.partition('@')[0]
         logger.info('host is %s'%host)
@@ -354,7 +362,7 @@ def handle(to, sender, subject, body, zabbix_server=config.zabbix_address,
             else:
                 decoded = part.get_payload()
             
-            if DECODE_HTML and part.get_content_subtype()=='html':
+            if decode_html and part.get_content_subtype()=='html':
                 try:
                     logger.debug('trying decode html (charset {})...'.format(charset))
                     decoded_body += unidecode("|".join(bs4.BeautifulSoup(decoded.decode(charset),"lxml").strings))
@@ -403,20 +411,16 @@ if __name__=='__main__':
             if host!=last_host:
                 last_host=host
                 last_key=key
-                print(host,end=':')
-                print(key,end=':')
             else:
-                print(" "*len(last_host),end=':')
+                host=" "*len(last_host)
                 if key!=last_key:
                     last_key=key
-                    print(key,end=':')
                 else:
-                    print(" "*len(last_key),end=':')
-            print (value)
+                    key=" "*len(last_key)
+            print('{}:{}:{}'.format(host, key, value))
     elif args.remove:
         host, key, value = args.remove
         Memory().remove(host, key, value)
-        print('Those where removed: ',host,key,value)
-        
+        print('Those where removed: {}:{}:{}'.format(host,key,value))        
 
             
