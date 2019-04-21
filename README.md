@@ -80,7 +80,7 @@ By usefullness:
 In case you change your discovery rules, you will need your discovery to be resent. This is automatic for entities discovered after the modification, but will not happend for already discovered entities. For them, you will need to 'refresh' the rule, do this with :
 
 ```bash
-python3 smtpToZbxTrap.py --refresh
+python smtpToZbxTrap.py --refresh
 ```
 
 ### Explore memory
@@ -88,7 +88,7 @@ python3 smtpToZbxTrap.py --refresh
 Sometimes you need to know what is inside your memory. Of course, you can use sqlite directly, but for convenience a small function has been added:
 
 ```bash
-python3 smtpToZbxTrap.py --list
+python smtpToZbxTrap.py --list
 ```
 
 ### Clean memory
@@ -96,7 +96,7 @@ python3 smtpToZbxTrap.py --list
 Last, sometimes, an host or entity need to be removed (so that it is not sent anymore to Zabbix). This should be done for deleted zabbix hosts to limit Zabbix trapper solicitation.
 
 ```bash
-python3 smtpToZbxTrap.py --remove <host> <key> <value>
+python smtpToZbxTrap.py --remove <host> <key> <value>
 ```
 
 This will delete all entries in memory matching `<host>`, `<key>` and `<value>`(that should be replaced with real values of course). The `%`caracter is the wildcard here.
