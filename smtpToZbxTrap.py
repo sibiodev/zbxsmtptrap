@@ -6,13 +6,14 @@
 
 from inbox import Inbox
 from email import message_from_string
-from zabbix.sender import ZabbixMetric, ZabbixSender
+
 from unidecode import unidecode
 import json
 from time import sleep
-import ConfigParser
 import argparse
-import types
+
+#import StringIO
+import subprocess
 
 from base64 import b64decode
 import quopri
@@ -20,7 +21,6 @@ import bs4
 
 from os import environ
 
-import sqlite3
 import re
 
 import logging
@@ -28,61 +28,17 @@ from logging.handlers import RotatingFileHandler
 
 
 
+from utilities.server_configuration import ServerConfiguration
+from utilities.myzabbix import MyZabbix, DISCOVERY_LATENCY
+from utilities.memory import Memory
 
-BIND_TO_ADDR = '127.0.0.1'
-BIND_TO_PORT = '10025'
-
-ZABBIX_SERVER_ADDR = '127.0.0.1'
-ZABBIX_SERVER_PORT = '10051'
-
-LOG_FILE='/var/log/smtptozbx/smtptozbx.log'
-SERVER_MEMORY = "/var/lib/smtptotrap/memory.db"
-
-DECODE_HTML = True
+from parser import dmarc
 
 DEFAULT_INI = '/etc/zabbix/smtpToZbxTrap.ini'
 
 
 
 
-class ServerConfiguration(object):
-    """Configuration holding class, unpack config file (ini file) in config.section_variable 
-    It also does some specific mechanics about ltfs.ini [drive]/[json] section and checks some 
-    files."""
-    __section_names__ = ['server','zabbix']
-    __variable_sections__ = ['subjects']
-
-    def bool(self, str):
-        if type(str) == types.BooleanType:
-            return str
-        else:
-            return str.lower() in ['y','yes','true','1']
-    
-    def __init__(self,file_name):
-        """Initialize instance by reading the config file"""
-        self.set_defaults()
-        config = ConfigParser.ConfigParser()
-        config.read(file_name)
-        for section_name in self.__section_names__:
-            for config_name, config_value in config.items(section_name):
-                self.__dict__['%s_%s'%(section_name,config_name)] = config_value
-        for section_name in self.__variable_sections__:
-            self.__dict__[section_name] = dict(config.items(section_name))
-        self.format_type()
-
-    def set_defaults(self):
-        self.server_bind_address=BIND_TO_ADDR
-        self.server_bind_port=BIND_TO_PORT
-        self.server_log_file=LOG_FILE
-        self.server_memory=SERVER_MEMORY
-        self.server_decode_html=DECODE_HTML
-        self.zabbix_port=ZABBIX_SERVER_PORT
-        self.zabbix_address=ZABBIX_SERVER_ADDR
-
-    def format_type(self):
-        self.server_decode_html = self.bool(self.server_decode_html)
-        self.zabbix_port=int(self.zabbix_port)
-        self.server_bind_port=int(self.server_bind_port) 
 
 
 logger = logging.getLogger('smtptozbx')
@@ -121,89 +77,18 @@ group.add_argument('--remove',
 
 args = argument_parser.parse_args()
 
-config=ServerConfiguration(args.ini)
+config=ServerConfiguration(args.ini)       
 
 handler = RotatingFileHandler(config.server_log_file, maxBytes=1000000, backupCount=10)
 handler.setFormatter( logging.Formatter(fmt='%(asctime)s %(message)s',
                                 datefmt='%Y-%m-%d %I:%M:%S %p') )
 logger.addHandler(handler)
 
+ 
 
 
-def filter_unicode(text):
-    return text.decode('ascii', errors='ignore')
 
-class MyZabbix(object):
-    """A small convenience object to pack ZabbixMetric and ZabbixSender together."""
-    
-    def __init__(self, zabbix_server, zabbix_port, host):
-        self.host = host
-        self.server = zabbix_server
-        self.port = zabbix_port
-        self.metrics = []
-    
-    def add(self, key, value):
-        key = filter_unicode(key)
-        value = filter_unicode(value)
-        host = filter_unicode(self.host)
-        self.metrics.append( ZabbixMetric(host,key,value) )
-        
-    def send(self):
-        if self.metrics:
-            logger.debug('Sending metrics to %s:%d'%(self.server,self.port))
-            logger.debug('metrics:{}'.format(self.metrics))
-            response = ZabbixSender(self.server, self.port).send(self.metrics)
-            logger.debug(response)
-            self.metrics = []
-        else:
-            logger.debug('Metric are empty, nothing to send to %s:%s'%(self.server,self.port) )
-            response = None
-        return response
 
-class Memory(object):
-    """A small wrapper around sqlite3 database. This could be better, se TODO remark in 
-    SubjectMatcher class."""
-    
-    def __init__(self, dbpath=config.server_memory):
-        # Check database
-        #
-        self.db = sqlite3.connect(dbpath)
-
-        try:
-            self.db.execute('SELECT * FROM subject')
-        except sqlite3.OperationalError:
-            self.db.execute('CREATE TABLE subject (host varchar(100), key varchar(50), value varchar(255))')
-
-    def get_subject_values(self, host, key):
-        cursor = self.db.execute('SELECT value FROM subject WHERE host=? AND key=?', (host,key) )
-        return [item[0] for item in cursor.fetchall()];
-
-    def get_subject_key_values(self, host):
-        cursor = self.db.execute('SELECT key,value FROM subject WHERE host=?', (host,) )
-        return cursor.fetchall()
-
-    def add_subject(self, host, key, value):
-        self.db.execute("""INSERT INTO subject ('host','key','value') VALUES (?,?,?)""",
-                    (host, key, value))
-        self.db.commit()
-        
-    def host_has_key_value(self, host, key, value):
-        cursor = self.db.execute("""SELECT count(*) FROM subject WHERE host=? AND key=? AND value=?""",
-                    (host, key, value))
-        return cursor.fetchall()[0][0]
-    
-    def get_hosts(self):
-        cursor = self.db.execute("""SELECT DISTINCT host FROM subject""")
-        return [item[0] for item in cursor.fetchall()];
-    
-    def list(self):
-        cursor = self.db.execute("""SELECT host,key,value FROM subject ORDER BY host,key,value""")
-        return cursor.fetchall()
-
-    def remove(self, host, key, value):
-        self.db.execute("""DELETE FROM subject WHERE host like ? AND key like ? AND value like ?""",
-                    (host, key, value))
-        self.db.commit()
 
 class SubjectDiscovery(object):
     """This object is here to produce the subjectdiscovery SMTP trap (smtp.trap.subject.dicovery[ key ]).
@@ -226,35 +111,23 @@ class SubjectDiscovery(object):
         for prototype_class, regexp in config.subjects.items():
             self.prototype_classes.append(prototype_class)
             self.prototype_regexp[prototype_class] = re.compile(regexp)
+        self.seen_prototype_classes=[]
         
     def parse(self, subject):
+        self.seen_prototype_classes=[]
         for prototype_class in self.prototype_classes:
             m = self.prototype_regexp[prototype_class].match(subject)
             if m:
                 metricgroups = m.groupdict()
                 prototype_name = metricgroups[prototype_class]
+                self.seen_prototype_classes.append(prototype_class)
                 self.host_match[(prototype_class,prototype_name)]=metricgroups
-                if self.memory.host_has_key_value(self.host, prototype_class,
-                                                  prototype_name):
-                    logger.debug('This prototype ({}:{}) is already known for host {}.'.format(
-                        prototype_class,prototype_name,self.host))
-                    continue
-                else:
-                    prototype_names = list(self.memory.get_subject_values(
-                        self.host,prototype_class))
-                    prototype_names.append(prototype_name)
-                    
-                    data = [ { "{{#{}}}".format(prototype_class.upper())  : prototype_name  }
-                                         for prototype_name in prototype_names ]
-                                         
-                    discovery = json.dumps({"data": data}, indent=4)
-                    
-                        
-                    self.zabbix.add("smtp.trap.subject.discovery[{}]".format(prototype_class),
-                                discovery)
-                    logger.debug('New prototype name {}: discovery sent : {}.'.format(prototype_name,discovery))
-                    self.memory.add_subject(self.host, prototype_class, prototype_name)
-                    logger.debug('New value {}: added in memory.'.format(prototype_name))
+                self.zabbix.add_discovery(prototype_class, prototype_name)
+    
+    def get_prototypes(self):
+        """Return prototypes class seen at last parse
+        """
+        return self.seen_prototype_classes
 
 def resend_discovery(zabbix_server=config.zabbix_address, zabbix_port=config.zabbix_port):
     memory = Memory()
@@ -336,62 +209,109 @@ class SubjectMatcher(object):
                                 prototype_class, prototype_name),
                             body)
 
+            
+
 inbox = Inbox()
 
-@inbox.collate
 
+def _decode(part):
+    encoding = part.get('Content-Transfer-Encoding')
+    if encoding=='base64':
+        decoded = b64decode(part.get_payload())
+    elif encoding=='quoted-printable':
+        decoded = quopri.decodestring(part.get_payload())
+    else:
+        decoded = part.get_payload()
+    return decoded
+
+@inbox.collate
 def handle(to, sender, subject, body, zabbix_server=config.zabbix_address, 
-                zabbix_port=config.zabbix_port, decode_html=config.server_decode_html):
+                zabbix_port=config.zabbix_port, decode_html=config.server_decode_html,
+                attachments=config.attachments,
+                base_traps=config.server_send_base_traps):
     for recipient in to:
         host = recipient.partition('@')[0]
         logger.info('host is %s'%host)
         myzabbix = MyZabbix(zabbix_server, zabbix_port, host)
         
-        decoded_body = ""
-        email = message_from_string(body)
-        for part in email.walk():
-            if part.get_content_maintype()!="text":
-                continue
-            charset = part.get_content_charset()
-
-            encoding = part.get('Content-Transfer-Encoding')
-            if encoding=='base64':
-                decoded = b64decode(part.get_payload())
-            elif encoding=='quoted-printable':
-                decoded = quopri.decodestring(part.get_payload())
-            else:
-                decoded = part.get_payload()
-            
-            if decode_html and part.get_content_subtype()=='html':
-                try:
-                    logger.debug('trying decode html (charset {})...'.format(charset))
-                    decoded_body += unidecode("|".join(bs4.BeautifulSoup(decoded.decode(charset),"lxml").strings))
-                except Exception as e:
-                    logger.debug('...failed for reason {}'.format(e))
-                    decoded_body += decoded
-            else:
-                decoded_body += decoded
-
-        logger.debug('final body: %s'%decoded_body)
-        
+        # parse subject
+        #   if myzabbix has some metrics, because it comes from SubjectDiscovery,
+        #   these metrics are necessarily discoveries
         smtptrap_memory = Memory()
         subject_discovery = SubjectDiscovery(smtptrap_memory, myzabbix, host)
         subject_discovery.parse(subject)
-        # must send discovery if there is one before sending any other metrics
+        #   must send discovery if there is one before sending any other metrics
         if myzabbix.metrics:
             myzabbix.send()
-            logger.debug('Now waiting one minute before submitting fresh results after discovery.')
-            sleep(60)
+            logger.debug('Now waiting {} seconds before submitting fresh results after discovery.'.format(
+                DISCOVERY_LATENCY
+            ))
+            sleep(DISCOVERY_LATENCY)
+            smtptrap_memory.unlock_lock(host)
         else:
             logger.debug('No discovery in this email.')
+
+
+        # parse body & attachments
+        decoded_body = ""
+        email = message_from_string(body)
+        for part in email.walk():
+            if part.get_content_maintype()=="text":
+                charset = part.get_content_charset()
+
+                decoded = _decode(part)
+                
+                if decode_html and part.get_content_subtype()=='html':
+                    try:
+                        logger.debug('trying decode html (charset {})...'.format(charset))
+                        decoded_body += unidecode("|".join(bs4.BeautifulSoup(decoded.decode(charset),"lxml").strings))
+                    except Exception as e:
+                        logger.debug('...failed for reason {}'.format(e))
+                        decoded_body += decoded
+                else:
+                    decoded_body += decoded
+            else:
+                part_type = part.get_content_type()
+                logger.debug('Found a {} attachment.'.format(part_type))
+                for prototype in subject_discovery.get_prototypes():
+                    if prototype in attachments:
+                        if part_type in attachments[prototype]:
+                            logger.info('{} attachment is required for prototype {}'.format(
+                                part_type, prototype
+                            ))
+                            parser_definition = attachments[prototype][part_type]
+                            logger.info('Sending attachment to feeder {}'.format(
+                                parser_definition
+                            ))
+                            parser_module, parser_name = parser_definition.split('.')
+                            if parser_module == 'dmarc':
+                                module = dmarc
+                            else:
+                                logger.error('Unknown parser module {}'.format(parser_module))
+                                continue
+                            if parser_name in dir(module):
+                                parser = module.__dict__(parser_name)
+                            else:
+                                logger.error('Unknown parser function {}'.format(parser_name))
+                                continue
+                            try:
+                                parser(_decode(part), myzabbix)
+                            except Exception as e:
+                                logger.error('feeder output is undecipherable : {}'.format(e))
+                            
+        logger.debug('final body: %s'%decoded_body)
+        
 
         subject_matcher = SubjectMatcher(smtptrap_memory, myzabbix, host,
                                          subject_discovery.host_match)
         subject_matcher.parse(subject, decoded_body)
         
-        myzabbix.add('smtp.trap[message]', decoded_body)
-        myzabbix.add('smtp.trap[sender]', sender)
-        myzabbix.add('smtp.trap[subject]', subject)
+        if base_traps:
+            myzabbix.add('smtp.trap[message]', decoded_body)
+            myzabbix.add('smtp.trap[sender]', sender)
+            myzabbix.add('smtp.trap[subject]', subject)
+            for attachment in attachments:
+                myzabbix.add('smtp.trap[attachment]', attachment)
         myzabbix.send()
 
 
