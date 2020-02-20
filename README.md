@@ -11,6 +11,19 @@ The idea of zbxsmtptrap is to trap email as SNMPtrap does. While email is not a 
   - backup monitoring (notably Veeam which offers a much better integration with Zabbix using smtptrap than with its highly inefficient and CPU costly powershell snippet),
   - high level system monitoring (like graylog, etc.)
 
+## Status 
+
+This v2 is work in progress !
+It does not work yet.
+
+The code has been rewritten almost completely. It should be retro-compatible and add attachment treatment.
+
+What's new:
+ - code much cleaner, (mainly, objects (Memory,SubjectDiscovery) that need intializing once are intialized once, others are intialized at each mail (Myzabbix), no more global objects to pass config (that was ugly...))
+ - real python package (no more a python script),
+ - attachment can be read (even if compressed)
+ - added some xml treatment parser (for DMARC but can be used in case you have a XML that hold a list of identical elements, in which case dependant items are not a solution)
+
 ## Install
 
 ### Prerequisite

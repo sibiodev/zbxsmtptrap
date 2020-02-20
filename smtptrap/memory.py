@@ -1,5 +1,5 @@
 import sqlite3
-from utilities.myzabbix import DISCOVERY_LATENCY
+from myzabbix import DISCOVERY_LATENCY
 from time import sleep
 
 class Memory(object):
