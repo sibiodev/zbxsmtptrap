@@ -27,6 +27,8 @@ The idea of zbxsmtptrap is to trap email as SNMPtrap does. While email is not a 
 ### Zabbix setup
 
   Last you will need to create a discovery rule suited to your regular expression. See the example in smtpToZbxTrap.ini
+  Of course, you're welcome to use directly or modify the one in ZabbixShare : 
+  https://share.zabbix.com/cat-app/backup/veeam-backup-replication-by-smtp
 
 
 ## Example
