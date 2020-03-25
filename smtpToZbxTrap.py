@@ -225,11 +225,11 @@ class SubjectDiscovery(object):
         self.host_match = {}
         for prototype_class, regexp in config.subjects.items():
             self.prototype_classes.append(prototype_class)
-            self.prototype_regexp[prototype_class] = re.compile(regexp)
+            self.prototype_regexp[prototype_class] = re.compile(regexp, flags=re.MULTILINE+re.DOTALL)
         
     def parse(self, subject):
         for prototype_class in self.prototype_classes:
-            m = self.prototype_regexp[prototype_class].match(subject, flags=re.MULTILINE+re.DOTALL)
+            m = self.prototype_regexp[prototype_class].match(subject)
             if m:
                 metricgroups = m.groupdict()
                 prototype_name = metricgroups[prototype_class]
