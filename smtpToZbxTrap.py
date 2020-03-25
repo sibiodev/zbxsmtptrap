@@ -229,7 +229,7 @@ class SubjectDiscovery(object):
         
     def parse(self, subject):
         for prototype_class in self.prototype_classes:
-            m = self.prototype_regexp[prototype_class].match(subject)
+            m = self.prototype_regexp[prototype_class].match(subject, flags=re.MULTILINE+re.DOTALL)
             if m:
                 metricgroups = m.groupdict()
                 prototype_name = metricgroups[prototype_class]
