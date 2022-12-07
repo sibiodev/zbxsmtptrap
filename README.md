@@ -52,7 +52,7 @@ Next, you can set up different item prototype (of type `Zabbix trapper`) with th
 
 `smtp.trap.subject.match[veeamjob,{#VEEAMJOB},status]`
 
-(this item will cath the status of Veeam job as the name suggests)
+(this item will catch the status of Veeam job as the name suggests)
 
 The body can also be catched with this key:
 `smtp.trap.subject.match.body[veeamjob,{#VEEAMJOB}]`
